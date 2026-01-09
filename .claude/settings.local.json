@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir:*)",
+      "Bash(rojo build:*)",
+      "Bash(aftman install:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nImplement complete inventory, equipment, and belt system\n\n- Add equipment system with 9 slots \\(Weapon, Helmet, Chest, Gloves, Boots, Ring1, Ring2, Amulet, Belt\\)\n- Add belt/hotbar quick-use system with 5 slots \\(keybinds 1-5\\)\n- Implement full drag-and-drop functionality between inventory, equipment, and belt\n- Add item validation for equipment slots and belt \\(only potions/scrolls in belt\\)\n- Add stat recalculation when equipment changes\n- Implement potion and scroll consumption from belt slots\n- Add client-server synchronization for all inventory/equipment/belt changes\n- Fix inventory desync by making server authoritative source of truth\n- Add test items \\(health potion and iron sword\\) for demonstration\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n\\)\")"
+    ]
+  }
+}
