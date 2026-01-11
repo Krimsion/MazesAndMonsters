@@ -14,6 +14,7 @@ export type MonsterAI = {
 	PatrolRadius: number,
 	LastAttackTime: number,
 	LastStateChange: number,
+	ChaseStartTime: number,
 }
 
 local MonsterAI = {}
@@ -29,6 +30,7 @@ function MonsterAI.new(aggroRange: number, attackRange: number, patrolOrigin: Gr
 		PatrolRadius = 3,
 		LastAttackTime = 0,
 		LastStateChange = 0,
+		ChaseStartTime = 0,
 	}
 end
 
@@ -81,6 +83,7 @@ function MonsterAI.Update(
 		if currentTime - ai.LastStateChange > 0.5 then
 			ai.CurrentState = "Chase"
 			ai.LastStateChange = currentTime
+			ai.ChaseStartTime = currentTime -- Track when chase began
 		end
 	elseif ai.CurrentState == "Chase" then
 		if not ai.Target or not ai.Target:IsAlive() then
@@ -88,17 +91,28 @@ function MonsterAI.Update(
 			ai.Target = nil
 			ai.CurrentState = "Idle"
 			ai.LastStateChange = currentTime
-		elseif MonsterAI.IsTargetInAttackRange(monster.GridPosition, ai.Target.GridPosition, ai.AttackRange) then
-			-- Target is in attack range
-			ai.CurrentState = "Attack"
-			ai.LastStateChange = currentTime
-		elseif not MonsterAI.IsTargetInAggroRange(monster.GridPosition, ai.Target.GridPosition, ai.AggroRange * 1.5) then
-			-- Target moved too far, disengage (use 1.5x aggro range for leash)
-			ai.Target = nil
-			ai.CurrentState = "Disengage"
-			ai.LastStateChange = currentTime
 		else
-			-- Continue chasing (movement handled externally)
+			-- Check distance for attack range (no buffer when entering attack state)
+			local distance = GridSystem.GetDistance(monster.GridPosition, ai.Target.GridPosition)
+			if distance <= ai.AttackRange then
+				-- Target is in attack range
+				ai.CurrentState = "Attack"
+				ai.LastStateChange = currentTime
+			else
+				-- Check if target is out of aggro range
+				local isInAggroRange = MonsterAI.IsTargetInAggroRange(monster.GridPosition, ai.Target.GridPosition, ai.AggroRange * 1.5)
+				local chaseDuration = currentTime - ai.ChaseStartTime
+
+				-- Only disengage if out of range AND chase timer (5 seconds) has expired
+				if not isInAggroRange and chaseDuration > 5.0 then
+					-- Target moved too far and chase timer expired, disengage
+					ai.Target = nil
+					ai.CurrentState = "Disengage"
+					ai.LastStateChange = currentTime
+				else
+					-- Continue chasing (movement handled externally)
+				end
+			end
 		end
 	elseif ai.CurrentState == "Attack" then
 		if not ai.Target or not ai.Target:IsAlive() then
@@ -106,12 +120,19 @@ function MonsterAI.Update(
 			ai.Target = nil
 			ai.CurrentState = "Idle"
 			ai.LastStateChange = currentTime
-		elseif not MonsterAI.IsTargetInAttackRange(monster.GridPosition, ai.Target.GridPosition, ai.AttackRange) then
-			-- Target moved out of range, chase again
-			ai.CurrentState = "Chase"
-			ai.LastStateChange = currentTime
 		else
-			-- Continue attacking (attack logic handled externally)
+			-- Add buffer: only chase if target is significantly out of range
+			-- Use attackRange + 1 buffer to prevent constant state switching
+			local distance = GridSystem.GetDistance(monster.GridPosition, ai.Target.GridPosition)
+			if distance > ai.AttackRange + 1 then
+				-- Target moved out of range (with buffer), chase again
+				ai.CurrentState = "Chase"
+				ai.LastStateChange = currentTime
+				ai.ChaseStartTime = currentTime -- Reset chase timer
+			else
+				-- Continue attacking (attack logic handled externally)
+				-- Target is within attack range or buffer zone
+			end
 		end
 	elseif ai.CurrentState == "Disengage" then
 		-- Return to patrol origin or just go idle
@@ -183,6 +204,7 @@ function MonsterAI.Reset(ai: MonsterAI, currentTime: number)
 	ai.CurrentState = "Idle"
 	ai.Target = nil
 	ai.LastStateChange = currentTime
+	ai.ChaseStartTime = 0
 end
 
 return MonsterAI

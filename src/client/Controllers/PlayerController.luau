@@ -95,16 +95,33 @@ end
 function PlayerController:OnLeftClick()
 	-- Get mouse hit position in world
 	local mouseHit = self.Mouse.Hit
+	local mouseTarget = self.Mouse.Target
 
 	if not mouseHit then
 		return
 	end
 
+	-- Check if we clicked on or near a monster
+	local clickedMonster = false
+	if mouseTarget then
+		-- Check if the clicked part is a ClickArea (monster click detection area)
+		-- or if the part belongs to a monster model
+		if mouseTarget.Name == "ClickArea" then
+			clickedMonster = true
+		else
+			-- Also check if any ancestor is a monster model
+			local model = mouseTarget:FindFirstAncestorOfClass("Model")
+			if model and (model.Name:find("Skeleton") or model.Name:find("Warrior") or model.Name:find("Monster")) then
+				clickedMonster = true
+			end
+		end
+	end
+
 	-- Fire event to server for processing
-	-- Server will determine if this is movement, attack, or interaction
+	-- Server will determine if this is an attack or interaction
 	local clickEvent = ReplicatedStorage:FindFirstChild("PlayerClick")
 	if clickEvent and clickEvent:IsA("RemoteEvent") then
-		clickEvent:FireServer(mouseHit.Position)
+		clickEvent:FireServer(mouseHit.Position, clickedMonster)
 	end
 end
 

@@ -60,6 +60,8 @@ function DamageNumbers.Show(
 			textLabel.TextColor3 = Color3.fromRGB(255, 100, 0) -- Orange
 		elseif damageType == "Ice" then
 			textLabel.TextColor3 = Color3.fromRGB(100, 200, 255) -- Light blue
+		elseif damageType == "Lightning" then
+			textLabel.TextColor3 = Color3.fromRGB(255, 255, 100) -- Yellow
 		elseif damageType == "Poison" then
 			textLabel.TextColor3 = Color3.fromRGB(100, 255, 100) -- Green
 		elseif damageType == "Arcane" then

@@ -11,6 +11,10 @@ local MonsterTemplates = require(Shared.Data.MonsterTemplates)
 local CombatSystem = require(Shared.Combat.CombatSystem)
 local StatCalculator = require(Shared.Util.StatCalculator)
 local GridTypes = require(Shared.Types.Grid)
+local LootSystem = require(Shared.Systems.LootSystem)
+local ItemTypes = require(Shared.Types.Item)
+local ProjectileManager = require(script.Parent.Parent.Combat.ProjectileManager)
+local MonsterHealthBar = require(script.Parent.Parent.UI.MonsterHealthBar)
 
 local GameService = {}
 GameService.__index = GameService
@@ -22,13 +26,39 @@ export type PlayerAction = {
 	PathIndex: number,
 }
 
+export type LootContainer = {
+	Id: string,
+	Items: { LootSystem.LootDrop },
+	GridPosition: GridTypes.GridPosition,
+	Model: Model?,
+}
+
+export type RespawnInfo = {
+	TemplateName: string,
+	Level: number,
+	SpawnPosition: GridTypes.GridPosition,
+	RespawnTime: number,
+}
+
+export type MonsterData = {
+	monster: Actor.Actor,
+	ai: MonsterAI.MonsterAI,
+	templateName: string,
+	spawnPosition: GridTypes.GridPosition,
+}
+
 export type GameService = typeof(setmetatable(
 	{} :: {
 		GridSystem: GridSystem.GridSystem,
 		Players: { [Player]: Actor.Actor },
 		PlayerActions: { [Player]: PlayerAction? },
-		Monsters: { { monster: Actor.Actor, ai: MonsterAI.MonsterAI } },
+		Monsters: { MonsterData },
+		LootContainers: { [string]: LootContainer },
+		ProjectileManager: ProjectileManager.ProjectileManager,
+		RespawnQueue: { RespawnInfo },
 		LastUpdateTime: number,
+		NextLootId: number,
+		OnMonsterSpawned: ((Actor.Actor, GridTypes.GridPosition) -> ())?,
 	},
 	GameService
 ))
@@ -39,7 +69,12 @@ function GameService.new(tileSize: number): GameService
 		Players = {},
 		PlayerActions = {},
 		Monsters = {},
+		LootContainers = {},
+		ProjectileManager = ProjectileManager.new(),
+		RespawnQueue = {},
 		LastUpdateTime = tick(),
+		NextLootId = 1,
+		OnMonsterSpawned = nil,
 	}, GameService)
 
 	-- Start update loop
@@ -74,6 +109,14 @@ function GameService:BroadcastStatsUpdate(player: Player, playerActor: Actor.Act
 			RequiredXP = requiredXP,
 			Level = playerActor.Stats.Level,
 		})
+	end
+
+	-- Also send full stats for character sheet (include AvailableAttributePoints)
+	local updateFullStatsEvent = ReplicatedStorage:FindFirstChild("UpdateFullStats")
+	if updateFullStatsEvent then
+		local fullStats = playerActor.Stats
+		fullStats.AvailableAttributePoints = playerActor.AvailableAttributePoints
+		updateFullStatsEvent:FireClient(player, fullStats)
 	end
 end
 
@@ -155,7 +198,18 @@ function GameService:Update()
 		local ai = monsterData.ai
 
 		if not monster:IsAlive() then
-			-- Remove dead monsters
+			-- Check if this is a skeleton that should respawn
+			if monsterData.templateName == "Skeleton" then
+				-- Queue for respawn in 20 seconds
+				table.insert(self.RespawnQueue, {
+					TemplateName = monsterData.templateName,
+					Level = monster.Stats.Level,
+					SpawnPosition = monsterData.spawnPosition,
+					RespawnTime = currentTime + 20, -- 20 second respawn timer
+				})
+			end
+
+			-- Remove dead monster
 			self.GridSystem:ClearTile(monster.GridPosition)
 			table.remove(self.Monsters, i)
 			if monster.Model then
@@ -246,6 +300,35 @@ function GameService:Update()
 			end
 		end
 	end
+
+	-- Process respawn queue
+	for i = #self.RespawnQueue, 1, -1 do
+		local respawnInfo = self.RespawnQueue[i]
+		if currentTime >= respawnInfo.RespawnTime then
+			-- Check if spawn position is now available
+			if self.GridSystem:IsTileAvailable(respawnInfo.SpawnPosition) then
+				-- Respawn the monster
+				self:SpawnMonster(
+					respawnInfo.TemplateName,
+					respawnInfo.Level,
+					respawnInfo.SpawnPosition
+				)
+				print(
+					string.format(
+						"Respawned %s at (%d, %d)",
+						respawnInfo.TemplateName,
+						respawnInfo.SpawnPosition.X,
+						respawnInfo.SpawnPosition.Z
+					)
+				)
+				-- Remove from queue
+				table.remove(self.RespawnQueue, i)
+			else
+				-- Position still occupied, delay respawn by 5 seconds
+				respawnInfo.RespawnTime = currentTime + 5
+			end
+		end
+	end
 end
 
 -- Register a player actor
@@ -310,8 +393,18 @@ function GameService:SpawnMonster(
 	-- Occupy tile
 	self.GridSystem:OccupyTile(position, monster)
 
-	-- Add to monsters list
-	table.insert(self.Monsters, { monster = monster, ai = ai })
+	-- Add to monsters list with spawn info for respawning
+	table.insert(self.Monsters, {
+		monster = monster,
+		ai = ai,
+		templateName = templateName,
+		spawnPosition = position,
+	})
+
+	-- Call spawn callback if set
+	if self.OnMonsterSpawned then
+		self.OnMonsterSpawned(monster, position)
+	end
 
 	return monster
 end
@@ -505,12 +598,34 @@ function GameService:MoveMonster(monster: Actor.Actor, targetGridPos: GridTypes.
 	if self.GridSystem:MoveOccupant(monster.GridPosition, targetGridPos) then
 		monster.GridPosition = targetGridPos
 
-		-- Animate monster movement using Humanoid
+		-- Smoothly move monster model using TweenService
 		if monster.Model then
-			local humanoid = monster.Model:FindFirstChildOfClass("Humanoid")
-			if humanoid then
+			local rootPart = monster.Model.PrimaryPart or monster.Model:FindFirstChild("HumanoidRootPart")
+			if rootPart then
 				local worldPos = self.GridSystem:GridToWorld(targetGridPos)
-				humanoid:MoveTo(worldPos)
+				local startPos = rootPart.Position
+				local offset = worldPos - startPos
+
+				-- Calculate movement duration based on distance (roughly 0.3s per tile)
+				local distance = offset.Magnitude
+				local moveDuration = math.max(0.2, distance / 4 * 0.3)
+
+				-- Use TweenService for smooth movement
+				local TweenService = game:GetService("TweenService")
+				local tweenInfo = TweenInfo.new(
+					moveDuration,
+					Enum.EasingStyle.Linear,
+					Enum.EasingDirection.InOut
+				)
+
+				-- Tween all parts together
+				for _, part in monster.Model:GetDescendants() do
+					if part:IsA("BasePart") then
+						local targetPos = part.Position + offset
+						local tween = TweenService:Create(part, tweenInfo, { Position = targetPos })
+						tween:Play()
+					end
+				end
 			end
 		end
 
@@ -567,6 +682,14 @@ function GameService:PlayerAttack(player: Player, targetActor: Actor.Actor)
 	if damageInfo then
 		local died = CombatSystem.ApplyDamage(targetActor.Stats, damageInfo)
 
+		-- Update monster health bar if target is a monster
+		if not targetActor.IsPlayer and targetActor.Model and targetActor.Model.PrimaryPart then
+			local healthBar = targetActor.Model.PrimaryPart:FindFirstChild("HealthBar")
+			if healthBar then
+				MonsterHealthBar.Update(healthBar, targetActor)
+			end
+		end
+
 		-- Show damage numbers
 		self:BroadcastDamage(targetActor, damageInfo.Amount, damageInfo.Type, damageInfo.IsCrit, false)
 
@@ -590,10 +713,29 @@ function GameService:PlayerAttack(player: Player, targetActor: Actor.Actor)
 
 			if leveledUp then
 				print(playerActor.Name .. " leveled up to " .. playerActor.Stats.Level .. "!")
+
+				-- Send level-up notification
+				local showNotificationEvent = game:GetService("ReplicatedStorage"):FindFirstChild("ShowNotification")
+				if showNotificationEvent then
+					showNotificationEvent:FireClient(
+						player,
+						string.format(
+							"LEVEL UP! You are now level %d! You have %d attribute points to spend. Press C to open your character sheet.",
+							playerActor.Stats.Level,
+							playerActor.AvailableAttributePoints or 0
+						)
+					)
+				end
 			end
 
 			-- Update stats after XP gain
 			self:BroadcastStatsUpdate(player, playerActor)
+
+			-- Generate and drop loot
+			local loot = LootSystem.GenerateLoot(targetActor.Stats.Level, targetActor.Name)
+			if #loot > 0 then
+				self:CreateLootContainer(targetActor.GridPosition, loot)
+			end
 		end
 	else
 		-- Show miss
@@ -618,6 +760,14 @@ function GameService:MonsterAttack(monster: Actor.Actor, targetActor: Actor.Acto
 
 	if damageInfo then
 		local died = CombatSystem.ApplyDamage(targetActor.Stats, damageInfo)
+
+		-- Update monster health bar if target is a monster
+		if not targetActor.IsPlayer and targetActor.Model and targetActor.Model.PrimaryPart then
+			local healthBar = targetActor.Model.PrimaryPart:FindFirstChild("HealthBar")
+			if healthBar then
+				MonsterHealthBar.Update(healthBar, targetActor)
+			end
+		end
 
 		-- Show damage numbers
 		self:BroadcastDamage(targetActor, damageInfo.Amount, damageInfo.Type, damageInfo.IsCrit, false)
@@ -648,6 +798,74 @@ function GameService:MonsterAttack(monster: Actor.Actor, targetActor: Actor.Acto
 		self:BroadcastDamage(targetActor, 0, "Physical", false, true)
 		print(monster.Name .. " missed!")
 	end
+end
+
+-- Create a loot container at a grid position
+function GameService:CreateLootContainer(gridPos: GridTypes.GridPosition, loot: { LootSystem.LootDrop })
+	if #loot == 0 then
+		return nil
+	end
+
+	local lootId = "loot_" .. tostring(self.NextLootId)
+	self.NextLootId += 1
+
+	-- Create visual loot bag model
+	local lootModel = Instance.new("Model")
+	lootModel.Name = "LootBag_" .. lootId
+
+	local lootPart = Instance.new("Part")
+	lootPart.Name = "LootPart"
+	lootPart.Size = Vector3.new(1.5, 1.5, 1.5)
+	lootPart.Color = Color3.fromRGB(180, 140, 60) -- Golden/brown color
+	lootPart.Material = Enum.Material.SmoothPlastic
+	lootPart.Anchored = true
+	lootPart.CanCollide = false
+	lootPart.Position = self.GridSystem:GridToWorld(gridPos) + Vector3.new(0, 0.75, 0)
+	lootPart.Parent = lootModel
+
+	-- Add click detector for interaction
+	local clickDetector = Instance.new("ClickDetector")
+	clickDetector.MaxActivationDistance = 10
+	clickDetector.Parent = lootPart
+
+	-- Add visual sparkles to make it noticeable
+	local sparkles = Instance.new("Sparkles")
+	sparkles.SparkleColor = Color3.fromRGB(255, 215, 0)
+	sparkles.Parent = lootPart
+
+	lootModel.Parent = workspace
+
+	-- Store loot container
+	local container: LootContainer = {
+		Id = lootId,
+		Items = loot,
+		GridPosition = gridPos,
+		Model = lootModel,
+	}
+
+	self.LootContainers[lootId] = container
+
+	print(string.format("Created loot container %s at (%d, %d) with %d items", lootId, gridPos.X, gridPos.Z, #loot))
+
+	return container
+end
+
+-- Remove a loot container
+function GameService:RemoveLootContainer(lootId: string)
+	local container = self.LootContainers[lootId]
+	if not container then
+		return
+	end
+
+	-- Destroy visual model
+	if container.Model then
+		container.Model:Destroy()
+	end
+
+	-- Remove from table
+	self.LootContainers[lootId] = nil
+
+	print("Removed loot container " .. lootId)
 end
 
 return GameService

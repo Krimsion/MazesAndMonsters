@@ -6,6 +6,7 @@ local CombatTypes = require(script.Parent.Parent.Types.Combat)
 local StatCalculator = require(script.Parent.Parent.Util.StatCalculator)
 local Inventory = require(script.Parent.Inventory)
 local ItemTypes = require(script.Parent.Parent.Types.Item)
+local SkillTypes = require(script.Parent.Parent.Types.Skill)
 
 local Actor = {}
 Actor.__index = Actor
@@ -15,12 +16,14 @@ export type Actor = typeof(setmetatable(
 		Name: string,
 		IsPlayer: boolean,
 		Stats: Stats.ActorStats,
+		BaseAttributes: Stats.Attributes, -- Base attributes without equipment bonuses
 		GridPosition: GridTypes.GridPosition,
 		StatusEffects: { CombatTypes.StatusEffect },
 		Model: Model?,
 		Inventory: Inventory.Inventory,
 		Equipment: { [string]: ItemTypes.Item? }, -- Weapon, Helmet, Chest, Gloves, Boots, Ring1, Ring2, Amulet, Belt
-		BeltSlots: { [number]: ItemTypes.ItemStack? }, -- 5 quick slots
+		BeltSlots: { [number]: ItemTypes.ItemStack? }, -- 5 quick slots for potions/scrolls
+		SkillSlots: { [number]: string? }, -- 5 quick slots for skills (stores skillId)
 
 		-- Gear modifiers (for stat calculation)
 		ArmorFromGear: number,
@@ -31,6 +34,7 @@ export type Actor = typeof(setmetatable(
 		-- Player-specific
 		AvailableAttributePoints: number?,
 		UnspentSkillPoints: number?,
+		LearnedSkills: { [string]: SkillTypes.LearnedSkill }?, -- Map of skillId -> LearnedSkill
 	},
 	Actor
 ))
@@ -54,6 +58,7 @@ function Actor.new(
 	local self = setmetatable({
 		Name = name,
 		IsPlayer = isPlayer,
+		BaseAttributes = startingAttributes, -- Store base attributes separately
 		GridPosition = gridPosition,
 		StatusEffects = {},
 		Model = nil,
@@ -69,7 +74,8 @@ function Actor.new(
 			Amulet = nil,
 			Belt = nil,
 		},
-		BeltSlots = {}, -- 5 quick slots initialized empty
+		BeltSlots = {}, -- 5 quick slots for potions/scrolls initialized empty
+		SkillSlots = {}, -- 5 quick slots for skills initialized empty
 
 		-- Gear modifiers
 		ArmorFromGear = 0,
@@ -97,6 +103,7 @@ function Actor.new(
 		-- Player-specific
 		AvailableAttributePoints = isPlayer and 0 or nil,
 		UnspentSkillPoints = isPlayer and 0 or nil,
+		LearnedSkills = isPlayer and {} or nil,
 	}, Actor)
 
 	-- Calculate derived stats
@@ -132,19 +139,19 @@ function Actor:AddAttributePoint(attribute: string, amount: number): boolean
 	end
 
 	if attribute == "STR" then
-		self.Stats.Attributes.STR += amount
+		self.BaseAttributes.STR += amount
 	elseif attribute == "DEX" then
-		self.Stats.Attributes.DEX += amount
+		self.BaseAttributes.DEX += amount
 	elseif attribute == "INT" then
-		self.Stats.Attributes.INT += amount
+		self.BaseAttributes.INT += amount
 	elseif attribute == "VIT" then
-		self.Stats.Attributes.VIT += amount
+		self.BaseAttributes.VIT += amount
 	else
 		return false
 	end
 
 	self.AvailableAttributePoints -= amount
-	self:RecalculateStats()
+	self:RecalculateStatsFromEquipment()
 
 	return true
 end
@@ -315,10 +322,22 @@ end
 
 -- Recalculate stats from equipped items
 function Actor:RecalculateStatsFromEquipment()
+	-- Store current health/mana percentages
+	local healthPercent = self.Stats.RuntimeStats.CurrentHealth / math.max(1, self.Stats.DerivedStats.MaxHealth)
+	local manaPercent = self.Stats.RuntimeStats.CurrentMana / math.max(1, self.Stats.DerivedStats.MaxMana)
+
 	-- Reset gear modifiers
 	self.ArmorFromGear = 0
 	self.CritFromGear = 0
 	self.CritDmgFromGear = 0
+
+	-- Start with base attributes (without equipment bonuses)
+	local totalAttributes = {
+		STR = self.BaseAttributes.STR,
+		DEX = self.BaseAttributes.DEX,
+		VIT = self.BaseAttributes.VIT,
+		INT = self.BaseAttributes.INT,
+	}
 
 	-- Sum up all equipment bonuses
 	for slotName, item in self.Equipment do
@@ -335,15 +354,29 @@ function Actor:RecalculateStatsFromEquipment()
 						self.CritFromGear += modifier.Value
 					elseif modifier.Type == "CritDamage" then
 						self.CritDmgFromGear += modifier.Value
+					elseif modifier.Type == "Strength" then
+						totalAttributes.STR += modifier.Value
+					elseif modifier.Type == "Dexterity" then
+						totalAttributes.DEX += modifier.Value
+					elseif modifier.Type == "Vitality" then
+						totalAttributes.VIT += modifier.Value
+					elseif modifier.Type == "Intelligence" then
+						totalAttributes.INT += modifier.Value
 					end
-					-- TODO: Handle other stat modifiers
 				end
 			end
 		end
 	end
 
+	-- Update current attributes with gear bonuses
+	self.Stats.Attributes = totalAttributes
+
 	-- Recalculate all stats
 	self:RecalculateStats()
+
+	-- Restore health/mana percentages (don't heal/damage on equipment change)
+	self.Stats.RuntimeStats.CurrentHealth = math.floor(self.Stats.DerivedStats.MaxHealth * healthPercent)
+	self.Stats.RuntimeStats.CurrentMana = math.floor(self.Stats.DerivedStats.MaxMana * manaPercent)
 end
 
 -- Use a consumable item (potion, scroll, etc.)
@@ -421,6 +454,50 @@ function Actor:UseBeltSlot(slotIndex: number): boolean
 	end
 
 	return false
+end
+
+-- Learn a skill from a skill book
+function Actor:LearnSkill(skillId: string): boolean
+	if not self.IsPlayer or not self.LearnedSkills then
+		return false
+	end
+
+	-- Check if already learned
+	if self.LearnedSkills[skillId] then
+		return false
+	end
+
+	-- Learn skill at level 1
+	self.LearnedSkills[skillId] = {
+		SkillId = skillId,
+		Level = 1,
+		LastUsedTime = nil,
+	}
+
+	return true
+end
+
+-- Check if player has learned a skill
+function Actor:HasLearnedSkill(skillId: string): boolean
+	if not self.LearnedSkills then
+		return false
+	end
+	return self.LearnedSkills[skillId] ~= nil
+end
+
+-- Set skill to hotbar slot
+function Actor:SetSkillSlot(slotIndex: number, skillId: string?): boolean
+	if slotIndex < 1 or slotIndex > 5 then
+		return false
+	end
+
+	-- If setting a skill, verify player has learned it
+	if skillId and not self:HasLearnedSkill(skillId) then
+		return false
+	end
+
+	self.SkillSlots[slotIndex] = skillId
+	return true
 end
 
 return Actor

@@ -18,6 +18,7 @@ export type InventoryUI = typeof(setmetatable(
 		SlotButtons: { [number]: TextButton },
 		EquipmentSlots: { [string]: TextButton },
 		BeltSlots: { [number]: TextButton },
+		TooltipFrame: Frame,
 		IsOpen: boolean,
 		DraggedItem: { SlotType: string, SlotIndex: number | string }?,
 		Equipment: { [string]: ItemTypes.Item? }, -- Mirror of Actor.Equipment
@@ -74,6 +75,7 @@ function InventoryUI:CreateUI()
 	inventoryFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 	inventoryFrame.BorderSizePixel = 2
 	inventoryFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	inventoryFrame.ZIndex = 1 -- Ensure tooltip (ZIndex 1000) renders above
 	inventoryFrame.Parent = screenGui
 
 	self.InventoryFrame = inventoryFrame
@@ -115,6 +117,9 @@ function InventoryUI:CreateUI()
 
 	-- Create x5 inventory grid (right side)
 	self:CreateInventoryGrid(inventoryFrame)
+
+	-- Create tooltip (initially hidden)
+	self:CreateTooltip()
 end
 
 function InventoryUI:CreatePaperDoll(parent: Frame)
@@ -265,6 +270,18 @@ function InventoryUI:CreateEquipmentSlot(slotName: string, x: number, y: number,
 		self:OnSlotMouseUp("Equipment", slotName)
 	end)
 
+	-- Tooltip handlers
+	slot.MouseEnter:Connect(function(x, y)
+		local item = self.Equipment[slotName]
+		if item then
+			self:ShowTooltip(item, Vector2.new(x, y))
+		end
+	end)
+
+	slot.MouseLeave:Connect(function()
+		self:HideTooltip()
+	end)
+
 	return slot
 end
 
@@ -313,6 +330,45 @@ function InventoryUI:CreateSlot(slotType: string, index: number | string, x: num
 
 	slot.MouseButton1Up:Connect(function()
 		self:OnSlotMouseUp(slotType, index)
+	end)
+
+	-- Right-click to use skill books
+	slot.MouseButton2Click:Connect(function()
+		if slotType == "Inventory" then
+			local stack = self.Inventory:GetItem(index :: number)
+			if stack and stack.Item.Type == "SkillBook" then
+				-- Request to use skill book
+				local useSkillBookEvent = ReplicatedStorage:FindFirstChild("UseSkillBook")
+				if useSkillBookEvent then
+					useSkillBookEvent:FireServer(index)
+					print("Attempting to learn skill from", stack.Item.Name)
+				end
+			end
+		end
+	end)
+
+	-- Tooltip handlers
+	slot.MouseEnter:Connect(function(x, y)
+		local item: ItemTypes.Item? = nil
+		if slotType == "Inventory" then
+			local stack = self.Inventory:GetItem(index :: number)
+			if stack then
+				item = stack.Item
+			end
+		elseif slotType == "Belt" then
+			local stack = self.Belt[index :: number]
+			if stack then
+				item = stack.Item
+			end
+		end
+
+		if item then
+			self:ShowTooltip(item, Vector2.new(x, y))
+		end
+	end)
+
+	slot.MouseLeave:Connect(function()
+		self:HideTooltip()
 	end)
 
 	return slot
@@ -435,27 +491,16 @@ function InventoryUI:EquipFromInventory(inventorySlot: number, equipSlot: string
 
 	local item = stack.Item
 
-	-- If there's already an item equipped, swap it
-	local currentEquipped = self.Equipment[equipSlot]
-	if currentEquipped then
-		-- Put current equipped item back in inventory
-		if not self.Inventory:AddItem(currentEquipped, 1) then
-			warn("Cannot equip - inventory full")
-			return
-		end
-	end
+	-- Don't modify client-side state - let server handle it and broadcast back
+	-- This prevents desync issues where we equip before server validates
 
-	-- Remove from inventory and equip (client-side)
-	self.Inventory:RemoveItem(inventorySlot, 1)
-	self.Equipment[equipSlot] = item
-
-	-- Notify server
+	-- Notify server to handle equipping
 	local equipItemEvent = ReplicatedStorage:FindFirstChild("EquipItem")
 	if equipItemEvent then
 		equipItemEvent:FireServer(inventorySlot, equipSlot)
 	end
 
-	print(string.format("Equipped %s to %s", item.Name, equipSlot))
+	print(string.format("Requesting to equip %s to %s", item.Name, equipSlot))
 end
 
 -- Unequip item to specific inventory slot
@@ -465,51 +510,16 @@ function InventoryUI:UnequipToInventory(equipSlot: string, inventorySlot: number
 		return
 	end
 
-	-- Check if target slot is empty or has same item (for stacking)
-	local targetStack = self.Inventory:GetItem(inventorySlot)
+	-- Don't modify client-side state - let server handle it and broadcast back
+	-- This prevents desync issues where we unequip before server validates
 
-	if targetStack then
-		-- If same item and can stack, try to add
-		if targetStack.Item.Id == item.Id and item.MaxStack > 1 then
-			local spaceAvailable = item.MaxStack - targetStack.Count
-			if spaceAvailable > 0 then
-				targetStack.Count += 1
-				self.Equipment[equipSlot] = nil
-
-				-- Notify server
-				local unequipItemEvent = ReplicatedStorage:FindFirstChild("UnequipItem")
-				if unequipItemEvent then
-					unequipItemEvent:FireServer(equipSlot)
-				end
-
-				print(string.format("Unequipped %s from %s", item.Name, equipSlot))
-				return
-			end
-		end
-
-		-- Otherwise, we need to swap
-		-- Put target item in a temp location
-		if not self.Inventory:AddItem(item, 1) then
-			warn("Cannot unequip - inventory full")
-			return
-		end
-		self.Equipment[equipSlot] = nil
-	else
-		-- Slot is empty, just move there
-		self.Inventory.Slots[inventorySlot] = {
-			Item = item,
-			Count = 1,
-		}
-		self.Equipment[equipSlot] = nil
-	end
-
-	-- Notify server
+	-- Notify server to handle unequipping
 	local unequipItemEvent = ReplicatedStorage:FindFirstChild("UnequipItem")
 	if unequipItemEvent then
 		unequipItemEvent:FireServer(equipSlot)
 	end
 
-	print(string.format("Unequipped %s from %s", item.Name, equipSlot))
+	print(string.format("Requesting to unequip %s from %s", item.Name, equipSlot))
 end
 
 -- Swap two equipment slots
@@ -554,6 +564,9 @@ function InventoryUI:Toggle()
 
 	if self.IsOpen then
 		self:RefreshUI()
+	else
+		-- Hide tooltip when closing inventory
+		self:HideTooltip()
 	end
 end
 
@@ -566,6 +579,8 @@ end
 function InventoryUI:Close()
 	self.IsOpen = false
 	self.ScreenGui.Enabled = false
+	-- Hide tooltip when closing inventory
+	self:HideTooltip()
 end
 
 function InventoryUI:RefreshUI()
@@ -717,6 +732,105 @@ function InventoryUI:SwapBelt(fromSlot: number, toSlot: number)
 	self.Belt[toSlot] = fromStack
 
 	print(string.format("Swapped belt slots %d and %d", fromSlot, toSlot))
+end
+
+function InventoryUI:CreateTooltip()
+	-- Create a separate ScreenGui for tooltips to ensure they're always on top
+	local tooltipScreenGui = Instance.new("ScreenGui")
+	tooltipScreenGui.Name = "TooltipUI"
+	tooltipScreenGui.ResetOnSpawn = false
+	tooltipScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	tooltipScreenGui.DisplayOrder = 100 -- Higher than inventory UI
+	tooltipScreenGui.Parent = self.Player.PlayerGui
+
+	-- Create tooltip frame (hidden by default)
+	local tooltip = Instance.new("Frame")
+	tooltip.Name = "Tooltip"
+	tooltip.Size = UDim2.new(0, 250, 0, 200)
+	tooltip.Position = UDim2.new(0, 0, 0, 0)
+	tooltip.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+	tooltip.BorderSizePixel = 2
+	tooltip.BorderColor3 = Color3.fromRGB(200, 200, 200)
+	tooltip.Visible = false
+	tooltip.Parent = tooltipScreenGui
+
+	-- Tooltip content
+	local content = Instance.new("TextLabel")
+	content.Name = "Content"
+	content.Size = UDim2.new(1, -10, 1, -10)
+	content.Position = UDim2.new(0, 5, 0, 5)
+	content.BackgroundTransparency = 1
+	content.Text = ""
+	content.TextColor3 = Color3.fromRGB(255, 255, 255)
+	content.TextSize = 12
+	content.Font = Enum.Font.Gotham
+	content.TextWrapped = true
+	content.TextXAlignment = Enum.TextXAlignment.Left
+	content.TextYAlignment = Enum.TextYAlignment.Top
+	content.RichText = true
+	content.Parent = tooltip
+
+	self.TooltipFrame = tooltip
+end
+
+function InventoryUI:ShowTooltip(item: ItemTypes.Item, mousePos: Vector2)
+	-- Build tooltip text
+	local tooltipText = ""
+
+	-- Item name with rarity color
+	local rarityColor = self:GetRarityColor(item.Rarity)
+	tooltipText = string.format('<font color="rgb(%d,%d,%d)"><b>%s</b></font>\n',
+		rarityColor.R * 255, rarityColor.G * 255, rarityColor.B * 255, item.Name)
+
+	-- Item type and level
+	tooltipText ..= string.format("%s - Level %d\n\n", item.Type, item.Level)
+
+	-- Weapon damage
+	if item.WeaponMinDamage and item.WeaponMaxDamage then
+		tooltipText ..= string.format("Damage: %d-%d\n", item.WeaponMinDamage, item.WeaponMaxDamage)
+	end
+
+	-- Armor value
+	if item.ArmorValue and item.ArmorValue > 0 then
+		tooltipText ..= string.format("Armor: %d\n", item.ArmorValue)
+	end
+
+	-- Stat requirements
+	if item.StatRequirements and #item.StatRequirements > 0 then
+		tooltipText ..= "\n<b>Requirements:</b>\n"
+		for _, req in item.StatRequirements do
+			tooltipText ..= string.format("  %s: %d\n", req.Stat, req.Value)
+		end
+	end
+
+	-- Stat modifiers
+	if item.StatModifiers and #item.StatModifiers > 0 then
+		tooltipText ..= "\n<b>Stats:</b>\n"
+		for _, mod in item.StatModifiers do
+			local modText = string.format("  +%s %s", tostring(mod.Value), mod.Type)
+			if mod.IsPercent then
+				modText = string.format("  +%.1f%% %s", mod.Value * 100, mod.Type)
+			end
+			tooltipText ..= '<font color="rgb(100,200,100)">' .. modText .. '</font>\n'
+		end
+	end
+
+	-- Description
+	if item.Description and item.Description ~= "" then
+		tooltipText ..= "\n" .. item.Description
+	end
+
+	-- Update tooltip
+	local content = self.TooltipFrame:FindFirstChild("Content") :: TextLabel
+	content.Text = tooltipText
+
+	-- Position tooltip near mouse
+	self.TooltipFrame.Position = UDim2.new(0, mousePos.X + 20, 0, mousePos.Y)
+	self.TooltipFrame.Visible = true
+end
+
+function InventoryUI:HideTooltip()
+	self.TooltipFrame.Visible = false
 end
 
 function InventoryUI:Destroy()
