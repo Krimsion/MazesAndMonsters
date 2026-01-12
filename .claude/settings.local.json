@@ -9,7 +9,10 @@
       "Bash(git push)",
       "Bash(find:*)",
       "Bash(cat:*)",
-      "Bash(powershell -Command:*)"
+      "Bash(powershell -Command:*)",
+      "Bash(git commit:*)",
+      "Bash(move \"D:\\\\MazesAndMonsters\\\\GameConfig.model.json\" \"D:\\\\MazesAndMonsters\\\\GameConfig.model.json.bak\")",
+      "Bash(move \"D:\\\\MazesAndMonsters\\\\src\\\\server\\\\Services\\\\GameService.luau\" \"D:\\\\MazesAndMonsters\\\\src\\\\server\\\\Services\\\\GameService.luau.bak\")"
     ]
   }
 }

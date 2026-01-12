@@ -7,6 +7,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Actor = require(ReplicatedStorage.Shared.Data.Actor)
 local ItemTypes = require(ReplicatedStorage.Shared.Types.Item)
 local SkillTypes = require(ReplicatedStorage.Shared.Types.Skill)
+local Items = require(ReplicatedStorage.Shared.Data.Items)
 
 -- TEST MODE: Use in-memory storage if DataStore is not available (Studio without API access)
 local USE_TEST_MODE = RunService:IsStudio()
@@ -171,10 +172,12 @@ function PlayerDataService.CreateCharacter(
 		CurrentMana = 50,
 		LearnedSkills = {},
 		SkillSlots = {},
-		Inventory = {},
+		Inventory = {
+			{ Item = Items.HealthPotion, Count = 5 }, -- Start with 5 health potions
+		},
 		BeltSlots = {},
 		Equipment = {
-			Weapon = nil,
+			Weapon = { Item = Items.WoodenBow, Count = 1 }, -- Start with wooden bow
 			Helmet = nil,
 			Chest = nil,
 			Gloves = nil,
@@ -254,6 +257,16 @@ function PlayerDataService.SaveCharacter(userId: number, slotIndex: number, acto
 
 	-- Convert Actor to CharacterData
 	-- Map abbreviated attribute names to full names for storage
+	-- Convert Equipment Items to ItemStacks for storage
+	local equipmentStacks = {}
+	for slotName, item in actor.Equipment do
+		if item then
+			equipmentStacks[slotName] = { Item = item, Count = 1 }
+		else
+			equipmentStacks[slotName] = nil
+		end
+	end
+
 	local characterData: CharacterData = {
 		Name = actor.Name,
 		Level = actor.Stats.Level,
@@ -271,7 +284,7 @@ function PlayerDataService.SaveCharacter(userId: number, slotIndex: number, acto
 		SkillSlots = actor.SkillSlots,
 		Inventory = actor.Inventory.Slots,
 		BeltSlots = actor.BeltSlots,
-		Equipment = actor.Equipment,
+		Equipment = equipmentStacks,
 		LastSaved = os.time(),
 	}
 

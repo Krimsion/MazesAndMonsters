@@ -6,6 +6,9 @@
     "ReplicatedStorage": {
       "Shared": {
         "$path": "src/shared"
+      },
+      "GameConfig": {
+        "$path": "GameConfig.model.json"
       }
     },
 

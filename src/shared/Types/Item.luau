@@ -42,6 +42,8 @@ export type Item = {
 	-- Weapon specific
 	WeaponMinDamage: number?,
 	WeaponMaxDamage: number?,
+	IsRanged: boolean?, -- true for bows/crossbows, false/nil for melee
+	AttackRange: number?, -- Range in grid tiles (1 for melee, 5-8 for ranged)
 
 	-- Armor specific
 	ArmorValue: number?,

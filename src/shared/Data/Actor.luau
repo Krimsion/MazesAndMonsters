@@ -1,7 +1,6 @@
 --!strict
 
 local Stats = require(script.Parent.Parent.Types.Stats)
-local GridTypes = require(script.Parent.Parent.Types.Grid)
 local CombatTypes = require(script.Parent.Parent.Types.Combat)
 local StatCalculator = require(script.Parent.Parent.Util.StatCalculator)
 local Inventory = require(script.Parent.Inventory)
@@ -17,7 +16,7 @@ export type Actor = typeof(setmetatable(
 		IsPlayer: boolean,
 		Stats: Stats.ActorStats,
 		BaseAttributes: Stats.Attributes, -- Base attributes without equipment bonuses
-		GridPosition: GridTypes.GridPosition,
+		Position: Vector3,
 		StatusEffects: { CombatTypes.StatusEffect },
 		Model: Model?,
 		Inventory: Inventory.Inventory,
@@ -45,7 +44,7 @@ function Actor.new(
 	isPlayer: boolean,
 	level: number,
 	startingAttributes: Stats.Attributes?,
-	gridPosition: GridTypes.GridPosition
+	position: Vector3
 ): Actor
 	-- Default starting attributes (5 in each)
 	startingAttributes = startingAttributes or {
@@ -59,7 +58,7 @@ function Actor.new(
 		Name = name,
 		IsPlayer = isPlayer,
 		BaseAttributes = startingAttributes, -- Store base attributes separately
-		GridPosition = gridPosition,
+		Position = position,
 		StatusEffects = {},
 		Model = nil,
 		Inventory = Inventory.new(25), -- 5x5 grid
@@ -383,14 +382,14 @@ end
 function Actor:UseItem(item: ItemTypes.Item): boolean
 	if item.Type == "Potion" then
 		-- Potions restore health/mana
-		if item.Id == "potion_health_minor" then
+		if item.Id == "health_potion" or item.Id == "potion_health_minor" then
 			self.Stats.RuntimeStats.CurrentHealth = math.min(
 				self.Stats.RuntimeStats.CurrentHealth + 50,
 				self.Stats.DerivedStats.MaxHealth
 			)
 			print(string.format("%s used %s and restored 50 HP", self.Name, item.Name))
 			return true
-		elseif item.Id == "potion_mana_minor" then
+		elseif item.Id == "mana_potion" or item.Id == "potion_mana_minor" then
 			self.Stats.RuntimeStats.CurrentMana = math.min(
 				self.Stats.RuntimeStats.CurrentMana + 30,
 				self.Stats.DerivedStats.MaxMana

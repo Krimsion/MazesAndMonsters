@@ -1,210 +1,170 @@
 --!strict
 
 local CombatTypes = require(script.Parent.Parent.Types.Combat)
-local GridTypes = require(script.Parent.Parent.Types.Grid)
 local Actor = require(script.Parent.Parent.Data.Actor)
-local GridSystem = require(script.Parent.Parent.Systems.GridSystem)
 
 export type MonsterAI = {
 	CurrentState: CombatTypes.AIState,
 	Target: Actor.Actor?,
 	AggroRange: number,
 	AttackRange: number,
-	PatrolOrigin: GridTypes.GridPosition?,
+	PatrolOrigin: Vector3?,
 	PatrolRadius: number,
 	LastAttackTime: number,
 	LastStateChange: number,
 	ChaseStartTime: number,
+	CurrentPath: { Vector3 }?,
+	PathIndex: number,
 }
 
 local MonsterAI = {}
 
 -- Create a new AI instance for a monster
-function MonsterAI.new(aggroRange: number, attackRange: number, patrolOrigin: GridTypes.GridPosition?): MonsterAI
+function MonsterAI.new(aggroRange: number?, attackRange: number?, patrolOrigin: Vector3?): MonsterAI
 	return {
 		CurrentState = "Idle",
 		Target = nil,
-		AggroRange = aggroRange,
-		AttackRange = attackRange,
+		AggroRange = aggroRange or 8,
+		AttackRange = attackRange or 1,
 		PatrolOrigin = patrolOrigin,
 		PatrolRadius = 3,
 		LastAttackTime = 0,
 		LastStateChange = 0,
 		ChaseStartTime = 0,
+		CurrentPath = nil,
+		PathIndex = 1,
 	}
 end
 
 -- Check if target is in aggro range
-function MonsterAI.IsTargetInAggroRange(
-	monsterPos: GridTypes.GridPosition,
-	targetPos: GridTypes.GridPosition,
-	aggroRange: number
-): boolean
-	local distance = GridSystem.GetDistance(monsterPos, targetPos)
-	return distance <= aggroRange
+function MonsterAI.IsTargetInAggroRange(monsterPos: Vector3, targetPos: Vector3, aggroRange: number): boolean
+	local distance = (monsterPos - targetPos).Magnitude
+	return distance <= (aggroRange * 4) -- Convert tiles to studs
 end
 
 -- Check if target is in attack range
-function MonsterAI.IsTargetInAttackRange(
-	monsterPos: GridTypes.GridPosition,
-	targetPos: GridTypes.GridPosition,
-	attackRange: number
-): boolean
-	local distance = GridSystem.GetDistance(monsterPos, targetPos)
-	return distance <= attackRange
+function MonsterAI.IsTargetInAttackRange(monsterPos: Vector3, targetPos: Vector3, attackRange: number): boolean
+	local distance = (monsterPos - targetPos).Magnitude
+	return distance <= (attackRange * 4) -- Convert tiles to studs
 end
 
--- Update AI state machine
-function MonsterAI.Update(
-	ai: MonsterAI,
-	monster: Actor.Actor,
-	gridSystem: GridSystem.GridSystem,
-	potentialTargets: { Actor.Actor },
-	currentTime: number,
-	deltaTime: number
-): CombatTypes.AIState
-	local previousState = ai.CurrentState
+-- Update AI state machine (called from GameService)
+function MonsterAI.Update(ai: MonsterAI, deltaTime: number, monster: Actor.Actor, players: {[Player]: Actor.Actor}, monsters: any, gameService: any)
+	local currentTime = tick()
+	local self = ai
+
+	-- Build list of potential targets (players only for now)
+	local potentialTargets = {}
+	for _, playerActor in players do
+		table.insert(potentialTargets, playerActor)
+	end
 
 	-- State machine
-	if ai.CurrentState == "Idle" or ai.CurrentState == "Patrol" then
+	if self.CurrentState == "Idle" or self.CurrentState == "Patrol" then
 		-- Look for targets in aggro range
 		for _, target in potentialTargets do
-			if target:IsAlive() and MonsterAI.IsTargetInAggroRange(monster.GridPosition, target.GridPosition, ai.AggroRange) then
-				ai.Target = target
-				ai.CurrentState = "Alert"
-				ai.LastStateChange = currentTime
+			if target:IsAlive() and MonsterAI.IsTargetInAggroRange(monster.Position, target.Position, self.AggroRange) then
+				self.Target = target
+				self.CurrentState = "Alert"
+				self.LastStateChange = currentTime
 				break
 			end
 		end
 
-		-- If no target found, continue patrolling (TODO: implement patrol movement)
-	elseif ai.CurrentState == "Alert" then
+	elseif self.CurrentState == "Alert" then
 		-- Transition to chase after a brief alert period
-		if currentTime - ai.LastStateChange > 0.5 then
-			ai.CurrentState = "Chase"
-			ai.LastStateChange = currentTime
-			ai.ChaseStartTime = currentTime -- Track when chase began
+		if currentTime - self.LastStateChange > 0.5 then
+			self.CurrentState = "Chase"
+			self.LastStateChange = currentTime
+			self.ChaseStartTime = currentTime
 		end
-	elseif ai.CurrentState == "Chase" then
-		if not ai.Target or not ai.Target:IsAlive() then
+
+	elseif self.CurrentState == "Chase" then
+		if not self.Target or not self.Target:IsAlive() then
 			-- Target died or lost, return to idle
-			ai.Target = nil
-			ai.CurrentState = "Idle"
-			ai.LastStateChange = currentTime
+			self.Target = nil
+			self.CurrentState = "Idle"
+			self.LastStateChange = currentTime
+			self.CurrentPath = nil
 		else
-			-- Check distance for attack range (no buffer when entering attack state)
-			local distance = GridSystem.GetDistance(monster.GridPosition, ai.Target.GridPosition)
-			if distance <= ai.AttackRange then
+			-- Check distance for attack range
+			local distance = (monster.Position - self.Target.Position).Magnitude
+			local attackRangeStuds = self.AttackRange * 4
+
+			if distance <= attackRangeStuds then
 				-- Target is in attack range
-				ai.CurrentState = "Attack"
-				ai.LastStateChange = currentTime
+				self.CurrentState = "Attack"
+				self.LastStateChange = currentTime
+				self.CurrentPath = nil
 			else
 				-- Check if target is out of aggro range
-				local isInAggroRange = MonsterAI.IsTargetInAggroRange(monster.GridPosition, ai.Target.GridPosition, ai.AggroRange * 1.5)
-				local chaseDuration = currentTime - ai.ChaseStartTime
+				local aggroRangeStuds = self.AggroRange * 4 * 1.5
+				local chaseDuration = currentTime - self.ChaseStartTime
 
-				-- Only disengage if out of range AND chase timer (5 seconds) has expired
-				if not isInAggroRange and chaseDuration > 5.0 then
+				if distance > aggroRangeStuds and chaseDuration > 10.0 then
 					-- Target moved too far and chase timer expired, disengage
-					ai.Target = nil
-					ai.CurrentState = "Disengage"
-					ai.LastStateChange = currentTime
+					self.Target = nil
+					self.CurrentState = "Disengage"
+					self.LastStateChange = currentTime
+					self.CurrentPath = nil
 				else
-					-- Continue chasing (movement handled externally)
+					-- Continue chasing - move towards target
+					MonsterAI.MoveTowardsTarget(self, monster, self.Target, deltaTime, gameService)
 				end
 			end
 		end
-	elseif ai.CurrentState == "Attack" then
-		if not ai.Target or not ai.Target:IsAlive() then
+
+	elseif self.CurrentState == "Attack" then
+		if not self.Target or not self.Target:IsAlive() then
 			-- Target died, return to idle
-			ai.Target = nil
-			ai.CurrentState = "Idle"
-			ai.LastStateChange = currentTime
+			self.Target = nil
+			self.CurrentState = "Idle"
+			self.LastStateChange = currentTime
+			self.CurrentPath = nil
 		else
-			-- Add buffer: only chase if target is significantly out of range
-			-- Use attackRange + 1 buffer to prevent constant state switching
-			local distance = GridSystem.GetDistance(monster.GridPosition, ai.Target.GridPosition)
-			if distance > ai.AttackRange + 1 then
-				-- Target moved out of range (with buffer), chase again
-				ai.CurrentState = "Chase"
-				ai.LastStateChange = currentTime
-				ai.ChaseStartTime = currentTime -- Reset chase timer
+			-- Check if target moved out of attack range (with buffer)
+			local distance = (monster.Position - self.Target.Position).Magnitude
+			local attackRangeStuds = (self.AttackRange + 1) * 4
+
+			if distance > attackRangeStuds then
+				-- Target moved out of range, chase again
+				self.CurrentState = "Chase"
+				self.LastStateChange = currentTime
+				self.ChaseStartTime = currentTime
+				self.CurrentPath = nil
 			else
-				-- Continue attacking (attack logic handled externally)
-				-- Target is within attack range or buffer zone
+				-- Perform attack
+				local attackCooldown = 1.5
+				if currentTime - self.LastAttackTime >= attackCooldown then
+					self.LastAttackTime = currentTime
+					gameService:MonsterAttack(monster, self.Target)
+				end
 			end
 		end
-	elseif ai.CurrentState == "Disengage" then
-		-- Return to patrol origin or just go idle
-		ai.CurrentState = "Idle"
-		ai.LastStateChange = currentTime
-	end
 
-	return ai.CurrentState
+	elseif self.CurrentState == "Disengage" then
+		-- Return to idle
+		self.CurrentState = "Idle"
+		self.LastStateChange = currentTime
+		self.CurrentPath = nil
+	end
 end
 
--- Get next movement position for monster (pathfinding)
-function MonsterAI.GetNextMovePosition(
-	ai: MonsterAI,
-	monster: Actor.Actor,
-	gridSystem: GridSystem.GridSystem
-): GridTypes.GridPosition?
-	if ai.CurrentState ~= "Chase" or not ai.Target then
-		return nil
+-- Move monster towards target
+function MonsterAI.MoveTowardsTarget(ai: MonsterAI, monster: Actor.Actor, target: Actor.Actor, deltaTime: number, gameService: any)
+	-- Simple direct movement for now (can add pathfinding later if needed)
+	local direction = (target.Position - monster.Position).Unit
+	local moveSpeed = 0.8 -- Slightly slower than player
+	local studsPerSecond = (1 / moveSpeed) * 4
+
+	-- Move towards target
+	local moveAmount = studsPerSecond * deltaTime
+	monster.Position = monster.Position + (direction * moveAmount)
+
+	-- Update model position - use PivotTo to move entire model
+	if monster.Model and monster.Model.PrimaryPart then
+		monster.Model:PivotTo(CFrame.lookAt(monster.Position, target.Position))
 	end
-
-	-- Find path to target
-	local path = gridSystem:FindPath(monster.GridPosition, ai.Target.GridPosition, 50)
-
-	if not path then
-		print(string.format(
-			"Monster pathfinding failed from (%d,%d) to (%d,%d)",
-			monster.GridPosition.X,
-			monster.GridPosition.Z,
-			ai.Target.GridPosition.X,
-			ai.Target.GridPosition.Z
-		))
-		return nil
-	end
-
-	if #path < 2 then
-		print(string.format("Monster path too short: %d positions", #path))
-		return nil
-	end
-
-	-- Return next step (skip first which is current position)
-	return path[2]
-end
-
--- Check if monster should attack (based on attack speed cooldown)
-function MonsterAI.CanAttack(ai: MonsterAI, monster: Actor.Actor, currentTime: number): boolean
-	if ai.CurrentState ~= "Attack" or not ai.Target then
-		return false
-	end
-
-	-- Check attack cooldown based on attack speed
-	local attackCooldown = 1.0 / monster.Stats.DerivedStats.AttackSpeed
-	return (currentTime - ai.LastAttackTime) >= attackCooldown
-end
-
--- Mark that an attack was performed
-function MonsterAI.MarkAttack(ai: MonsterAI, currentTime: number)
-	ai.LastAttackTime = currentTime
-end
-
--- Force aggro on a specific target
-function MonsterAI.ForceAggro(ai: MonsterAI, target: Actor.Actor, currentTime: number)
-	ai.Target = target
-	ai.CurrentState = "Alert"
-	ai.LastStateChange = currentTime
-end
-
--- Reset AI to idle state
-function MonsterAI.Reset(ai: MonsterAI, currentTime: number)
-	ai.CurrentState = "Idle"
-	ai.Target = nil
-	ai.LastStateChange = currentTime
-	ai.ChaseStartTime = 0
 end
 
 return MonsterAI

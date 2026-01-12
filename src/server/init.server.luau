@@ -5,17 +5,26 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local GameService = require(script.Services.GameService)
 local PlayerDataService = require(script.Services.PlayerDataService)
+local ConfigurationManager = require(script.Services.ConfigurationManager)
+local QuestManager = require(script.Services.QuestManager)
 local StatCalculator = require(ReplicatedStorage.Shared.Util.StatCalculator)
 local CombatSystem = require(ReplicatedStorage.Shared.Combat.CombatSystem)
 local SkillBook = require(ReplicatedStorage.Shared.Data.SkillBook)
 local MonsterAI = require(ReplicatedStorage.Shared.Systems.MonsterAI)
 local MonsterHealthBar = require(script.UI.MonsterHealthBar)
 local ItemTypes = require(ReplicatedStorage.Shared.Types.Item)
+local Actor = require(ReplicatedStorage.Shared.Data.Actor)
 
--- Initialize game service with 4-unit tiles
-local gameService = GameService.new(4)
+-- Initialize configuration first
+ConfigurationManager.GetOrCreateConfig()
 
-print("MazesAndMonsters Server initialized!")
+-- Initialize game service
+local gameService = GameService.new()
+
+-- Initialize quest manager
+local questManager = QuestManager.new()
+
+print("MazesAndMonsters Server initialized with tile size:", tileSize)
 
 -- Set up collision groups to prevent player-monster pushing
 local PhysicsService = game:GetService("PhysicsService")
@@ -32,7 +41,7 @@ end)
 PhysicsService:CollisionGroupSetCollidable("Players", "Monsters", false)
 
 -- Helper function to create a visual model for a monster
-local function CreateMonsterModel(monster, gridPosition)
+local function CreateMonsterModel(monster, position)
 	-- Create a simple visual representation
 	local monsterModel = Instance.new("Model")
 	monsterModel.Name = monster.Name
@@ -42,10 +51,10 @@ local function CreateMonsterModel(monster, gridPosition)
 	rootPart.Name = "HumanoidRootPart"
 	rootPart.Size = Vector3.new(2, 2, 1)
 	rootPart.Color = Color3.fromRGB(150, 150, 150)
-	rootPart.Anchored = true -- Anchor to prevent tipping/falling (monsters move via grid system)
-	rootPart.CanCollide = false -- No collision needed since we use grid-based positioning
-	rootPart.CanQuery = false -- Don't block raycasts - let ClickArea handle clicks
-	rootPart.Position = gameService.GridSystem:GridToWorld(gridPosition)
+	rootPart.Anchored = true
+	rootPart.CanCollide = false
+	rootPart.CanQuery = false
+	rootPart.Position = position
 	rootPart.Parent = monsterModel
 
 	-- Assign to Monsters collision group
@@ -74,9 +83,8 @@ local function CreateMonsterModel(monster, gridPosition)
 	clickArea.Position = rootPart.Position + Vector3.new(0, 2, 0) -- Centered higher to cover full height
 	clickArea.Parent = monsterModel
 
-	-- Create humanoid
-	local humanoid = Instance.new("Humanoid")
-	humanoid.Parent = monsterModel
+	-- Don't create Humanoid - we handle monster movement manually
+	-- and Humanoids cause physics interactions that knock over players
 
 	monsterModel.PrimaryPart = rootPart
 	monsterModel.Parent = workspace
@@ -87,9 +95,94 @@ local function CreateMonsterModel(monster, gridPosition)
 	MonsterHealthBar.Create(monster, monsterModel)
 end
 
+-- Helper function to create Cane NPC model
+local function CreateCaneNPC(position)
+	local npcModel = Instance.new("Model")
+	npcModel.Name = "Cane"
+
+	-- Create HumanoidRootPart
+	local rootPart = Instance.new("Part")
+	rootPart.Name = "HumanoidRootPart"
+	rootPart.Size = Vector3.new(2, 2, 1)
+	rootPart.Color = Color3.fromRGB(100, 180, 100) -- Green color for friendly NPC
+	rootPart.Anchored = true
+	rootPart.CanCollide = false
+	rootPart.CanQuery = false
+	rootPart.Position = position
+	rootPart.Parent = npcModel
+
+	-- Create visible body part
+	local bodyPart = Instance.new("Part")
+	bodyPart.Name = "Torso"
+	bodyPart.Size = Vector3.new(2, 2, 1)
+	bodyPart.Color = Color3.fromRGB(100, 180, 100)
+	bodyPart.Anchored = true
+	bodyPart.CanCollide = false
+	bodyPart.CanQuery = false
+	bodyPart.Position = rootPart.Position + Vector3.new(0, 2, 0)
+	bodyPart.Parent = npcModel
+
+	-- Create clickable area for NPC interaction
+	local clickArea = Instance.new("Part")
+	clickArea.Name = "ClickArea"
+	clickArea.Size = Vector3.new(6, 8, 6)
+	clickArea.Color = Color3.fromRGB(0, 255, 0)
+	clickArea.Transparency = 0.95
+	clickArea.Anchored = true
+	clickArea.CanCollide = false
+	clickArea.CanTouch = false
+	clickArea.Position = rootPart.Position + Vector3.new(0, 2, 0)
+	clickArea.Parent = npcModel
+
+	-- Add a name tag above the NPC
+	local billboardGui = Instance.new("BillboardGui")
+	billboardGui.Name = "NameTag"
+	billboardGui.Size = UDim2.new(0, 100, 0, 40)
+	billboardGui.StudsOffset = Vector3.new(0, 5, 0)
+	billboardGui.AlwaysOnTop = true
+	billboardGui.Parent = rootPart
+
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Size = UDim2.new(1, 0, 1, 0)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Text = "Cane"
+	nameLabel.TextColor3 = Color3.fromRGB(255, 255, 0) -- Yellow for quest giver
+	nameLabel.TextScaled = true
+	nameLabel.Font = Enum.Font.SourceSansBold
+	nameLabel.Parent = billboardGui
+
+	npcModel.PrimaryPart = rootPart
+	npcModel.Parent = workspace
+
+	return npcModel
+end
+
 -- Set up callback for when monsters spawn (including respawns)
-gameService.OnMonsterSpawned = function(monster, gridPosition)
-	CreateMonsterModel(monster, gridPosition)
+gameService.OnMonsterSpawned = function(monster, position)
+	CreateMonsterModel(monster, position)
+end
+
+-- Set up callback for when monsters are killed by players
+gameService.OnMonsterKilled = function(player, monster)
+	-- Update quest progress for killing this monster type
+	local updatedQuests = questManager:UpdateQuestProgress(player, "Kill", monster.Name, 1)
+
+	-- If any quests were updated, send the new quest state to client
+	if #updatedQuests > 0 then
+		local activeQuests = questManager:GetActiveQuests(player)
+		updateQuestsEvent:FireClient(player, activeQuests)
+
+		-- Check if any objectives were completed
+		for _, questId in updatedQuests do
+			local quest = questManager:GetQuest(player, questId)
+			if quest and quest.Status == "Completed" then
+				showNotificationEvent:FireClient(
+					player,
+					"Quest objective completed! Return to Cane to turn in your quest."
+				)
+			end
+		end
+	end
 end
 
 -- Setup remote events for client-server communication
@@ -189,6 +282,27 @@ selectCharacterEvent.Parent = ReplicatedStorage
 
 local promptCharacterNameEvent = Instance.new("RemoteEvent")
 promptCharacterNameEvent.Name = "PromptCharacterName"
+
+-- Quest events
+local npcClickEvent = Instance.new("RemoteEvent")
+npcClickEvent.Name = "NPCClick"
+npcClickEvent.Parent = ReplicatedStorage
+
+local openDialogueEvent = Instance.new("RemoteEvent")
+openDialogueEvent.Name = "OpenDialogue"
+openDialogueEvent.Parent = ReplicatedStorage
+
+local acceptQuestEvent = Instance.new("RemoteEvent")
+acceptQuestEvent.Name = "AcceptQuest"
+acceptQuestEvent.Parent = ReplicatedStorage
+
+local turnInQuestEvent = Instance.new("RemoteEvent")
+turnInQuestEvent.Name = "TurnInQuest"
+turnInQuestEvent.Parent = ReplicatedStorage
+
+local updateQuestsEvent = Instance.new("RemoteEvent")
+updateQuestsEvent.Name = "UpdateQuests"
+updateQuestsEvent.Parent = ReplicatedStorage
 promptCharacterNameEvent.Parent = ReplicatedStorage
 
 local createCharacterEvent = Instance.new("RemoteEvent")
@@ -218,6 +332,12 @@ Players.PlayerAdded:Connect(function(player)
 			return
 		end
 
+		-- Wait for humanoid to fully load
+		local humanoid = character:WaitForChild("Humanoid", 5)
+		if not humanoid then
+			return
+		end
+
 		-- Assign all character parts to Players collision group
 		-- This prevents physics interactions with monsters (they won't collide)
 		for _, part in pairs(character:GetDescendants()) do
@@ -225,6 +345,38 @@ Players.PlayerAdded:Connect(function(player)
 				PhysicsService:SetPartCollisionGroup(part, "Players")
 			end
 		end
+
+		-- Enforce upright orientation every frame to prevent tipping
+		local uprightEnforcer = game:GetService("RunService").Heartbeat:Connect(function()
+			if not humanoidRootPart or not humanoidRootPart.Parent then
+				uprightEnforcer:Disconnect()
+				return
+			end
+
+			local currentUpVector = humanoidRootPart.CFrame.UpVector
+			local tiltAmount = math.acos(currentUpVector.Y) -- Angle from vertical in radians
+			local tiltDegrees = math.deg(tiltAmount)
+
+			-- If tilted more than 1 degree, correct orientation
+			if tiltDegrees > 1 then
+				-- Extract current Y rotation (facing direction) and position
+				local _, currentYRotation, _ = humanoidRootPart.CFrame:ToOrientation()
+				local currentPos = humanoidRootPart.Position
+
+				-- Create perfectly upright CFrame with same position and Y rotation
+				humanoidRootPart.CFrame = CFrame.new(currentPos) * CFrame.Angles(0, currentYRotation, 0)
+
+				-- Log correction for debugging
+				warn(string.format("Corrected %s tilt: %.1f degrees -> upright", player.Name, tiltDegrees))
+			end
+		end)
+
+		-- Clean up upright enforcer when character dies or leaves
+		humanoid.Died:Connect(function()
+			if uprightEnforcer then
+				uprightEnforcer:Disconnect()
+			end
+		end)
 
 		-- Check if player has selected a character
 		local selectedSlot = playerCharacterSlots[player]
@@ -241,11 +393,24 @@ Players.PlayerAdded:Connect(function(player)
 			return
 		end
 
-		-- Register player at their spawn position
-		local spawnPos = humanoidRootPart.Position
-		local gridPos = gameService.GridSystem:WorldToGrid(spawnPos)
+		-- Set fixed spawn position in world space
+		local spawnPosition = Vector3.new(0, 3, 0) -- Spawn at origin, 3 studs above ground
 
-		local playerActor = gameService:RegisterPlayer(player, gridPos)
+		-- Anchor character temporarily to prevent falling during teleport
+		humanoidRootPart.Anchored = true
+
+		-- Wait a tiny bit for physics to settle
+		task.wait(0.1)
+
+		-- Teleport character to spawn position
+		humanoidRootPart.CFrame = CFrame.new(spawnPosition)
+
+		-- Unanchor after teleport
+		humanoidRootPart.Anchored = false
+
+		-- Create player actor at spawn position
+		local playerActor = Actor.new(player.Name, true, 1, nil, spawnPosition)
+		gameService:RegisterPlayer(player, playerActor)
 		playerActor.Model = character
 
 		-- Apply loaded character data
@@ -291,14 +456,19 @@ Players.PlayerAdded:Connect(function(player)
 		-- Load belt slots
 		playerActor.BeltSlots = characterData.BeltSlots
 
-		-- Load equipment
-		playerActor.Equipment = characterData.Equipment
+		-- Load equipment (convert ItemStacks to Items)
+		for slotName, itemStack in characterData.Equipment do
+			if itemStack then
+				playerActor.Equipment[slotName] = itemStack.Item
+			else
+				playerActor.Equipment[slotName] = nil
+			end
+		end
 
 		print(string.format(
-			"%s registered at grid position (%d, %d) - HP: %d, Mana: %d",
+			"%s registered at position %s - HP: %d, Mana: %d",
 			player.Name,
-			gridPos.X,
-			gridPos.Z,
+			tostring(spawnPosition),
 			playerActor.Stats.RuntimeStats.CurrentHealth,
 			playerActor.Stats.RuntimeStats.CurrentMana
 		))
@@ -342,25 +512,35 @@ Players.PlayerAdded:Connect(function(player)
 		end
 		updateSkillSlotsEvent:FireClient(player, skillSlotsDict)
 
-		-- Spawn some test monsters nearby
+		-- Spawn some test monsters (outside aggro range of 8 tiles = 32 studs)
 		local testMonsterPositions = {
-			{ X = gridPos.X + 5, Z = gridPos.Z },
-			{ X = gridPos.X + 3, Z = gridPos.Z + 3 },
-			{ X = gridPos.X - 4, Z = gridPos.Z + 2 },
+			Vector3.new(40, 3, 0),   -- East
+			Vector3.new(32, 3, 32),  -- Northeast
+			Vector3.new(-40, 3, 24), -- Northwest
 		}
 
 		for i, monsterPos in testMonsterPositions do
 			local monster = gameService:SpawnMonster("Skeleton", 1, monsterPos, false, false)
 			if monster then
 				print(string.format(
-					"Spawned %s at grid position (%d, %d)",
+					"Spawned %s at position %s",
 					monster.Name,
-					monsterPos.X,
-					monsterPos.Z
+					tostring(monsterPos)
 				))
-				-- Model creation handled by OnMonsterSpawned callback
 			end
 		end
+
+		-- Spawn Cane NPC (quest giver) - place him close to spawn
+		local canePosition = Vector3.new(-12, 3, -12)
+		local caneNPC = CreateCaneNPC(canePosition)
+		print(string.format("Spawned Cane NPC at position %s", tostring(canePosition)))
+
+		-- Initialize player quests
+		questManager:InitializePlayer(player, {})
+
+		-- Send initial quest state to client
+		local activeQuests = questManager:GetActiveQuests(player)
+		updateQuestsEvent:FireClient(player, activeQuests)
 	end)
 end)
 
@@ -394,37 +574,27 @@ playerClickEvent.OnServerEvent:Connect(function(player, clickPosition: Vector3, 
 		return
 	end
 
-	local targetGridPos = gameService.GridSystem:WorldToGrid(clickPosition)
-	local tile = gameService.GridSystem:GetTile(targetGridPos)
-
 	-- Only handle monster clicks - no click-to-move
 	if clickedMonster then
-		-- Search in a 2-tile radius for any monster
-		local monsterFound = false
-		for dx = -2, 2 do
-			for dz = -2, 2 do
-				local searchPos = { X = targetGridPos.X + dx, Z = targetGridPos.Z + dz }
-				local searchTile = gameService.GridSystem:GetTile(searchPos)
-				if searchTile.OccupiedBy and not searchTile.OccupiedBy.IsPlayer then
-					-- Found a monster, attack it
-					gameService:SetPlayerMoveToAttack(player, searchTile.OccupiedBy)
-					monsterFound = true
-					break
+		-- Find closest monster near click position
+		local closestMonster = nil
+		local closestDistance = math.huge
+
+		for _, monsterData in gameService.Monsters do
+			local monster = monsterData.monster
+			if monster:IsAlive() then
+				local distance = (monster.Position - clickPosition).Magnitude
+				if distance < 10 and distance < closestDistance then -- Within 10 studs of click
+					closestMonster = monster
+					closestDistance = distance
 				end
 			end
-			if monsterFound then
-				break
-			end
 		end
-		-- If we clicked a monster but couldn't find one, just check the exact tile
-		if not monsterFound and tile.OccupiedBy and not tile.OccupiedBy.IsPlayer then
-			gameService:SetPlayerMoveToAttack(player, tile.OccupiedBy)
+
+		if closestMonster then
+			gameService:SetPlayerMoveToAttack(player, closestMonster)
 		end
-	elseif tile.OccupiedBy and not tile.OccupiedBy.IsPlayer then
-		-- Check if clicking on an enemy (backup in case client-side detection missed it)
-		gameService:SetPlayerMoveToAttack(player, tile.OccupiedBy)
 	end
-	-- Removed click-to-move: clicking on empty tiles does nothing
 end)
 
 -- Handle ability usage
@@ -618,48 +788,8 @@ end)
 
 -- Handle loot pickup
 pickupLootEvent.OnServerEvent:Connect(function(player, lootId: string)
-	local playerActor = gameService.Players[player]
-	if not playerActor then
-		return
-	end
-
-	local container = gameService.LootContainers[lootId]
-	if not container then
-		warn(player.Name, "tried to pick up non-existent loot container", lootId)
-		return
-	end
-
-	-- Check if player is close enough (within 2 grid tiles)
-	local distance = math.abs(playerActor.GridPosition.X - container.GridPosition.X)
-		+ math.abs(playerActor.GridPosition.Z - container.GridPosition.Z)
-
-	if distance > 2 then
-		warn(player.Name, "tried to pick up loot from too far away")
-		return
-	end
-
-	-- Try to add all items to player's inventory
-	local pickedUpAll = true
-	for _, drop in container.Items do
-		if not playerActor.Inventory:AddItem(drop.Item, drop.Quantity) then
-			warn(string.format("%s's inventory is full, couldn't pick up %s", player.Name, drop.Item.Name))
-			pickedUpAll = false
-			break
-		end
-	end
-
-	if pickedUpAll then
-		print(string.format("%s picked up loot container %s", player.Name, lootId))
-
-		-- Send updated inventory to client
-		updateInventoryEvent:FireClient(player, playerActor.Inventory.Slots)
-
-		-- Remove loot container
-		gameService:RemoveLootContainer(lootId)
-	else
-		-- If inventory was full, send inventory update to show current state
-		updateInventoryEvent:FireClient(player, playerActor.Inventory.Slots)
-	end
+	-- Use the GameService method to handle loot pickup
+	gameService:PickupLoot(player, lootId)
 end)
 
 -- Handle using skill books
@@ -1181,6 +1311,136 @@ task.spawn(function()
 		end
 
 		print("Auto-save complete!")
+	end
+end)
+
+-- Handle NPC click (quest giver interaction)
+npcClickEvent.OnServerEvent:Connect(function(player, npcName: string)
+	local playerActor = gameService.Players[player]
+	if not playerActor then
+		return
+	end
+
+	-- Check if NPC is "Cane"
+	if npcName ~= "Cane" then
+		return
+	end
+
+	-- Find Cane NPC in workspace
+	local caneNPC = workspace:FindFirstChild("Cane")
+	if not caneNPC then
+		return
+	end
+
+	-- Check distance (close range = 2 tiles)
+	local character = player.Character
+	if not character then
+		return
+	end
+
+	local humanoidRootPart = character:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not humanoidRootPart then
+		return
+	end
+
+	local npcRootPart = caneNPC.PrimaryPart
+	if not npcRootPart then
+		return
+	end
+
+	-- Calculate distance (2 tiles = 8 studs)
+	local distance = (humanoidRootPart.Position - npcRootPart.Position).Magnitude
+
+	if distance > 8 then
+		showNotificationEvent:FireClient(player, "You are too far from Cane")
+		return
+	end
+
+	-- Check if player already has quest or has completed it
+	local hasQuest = questManager:HasQuest(player, "defeat_skeletons")
+	local activeQuest = questManager:GetQuest(player, "defeat_skeletons")
+
+	if activeQuest and activeQuest.Status == "Completed" then
+		-- Quest completed, show turn-in dialogue
+		openDialogueEvent:FireClient(player, {
+			NPCName = "Cane",
+			Dialogue = "You've defeated those skeletons! Thank you, brave adventurer. Here's your reward.",
+			QuestId = "defeat_skeletons",
+			ShowAccept = false,
+			ShowTurnIn = true,
+		})
+	elseif hasQuest then
+		-- Quest in progress
+		openDialogueEvent:FireClient(player, {
+			NPCName = "Cane",
+			Dialogue = "Those skeletons are still out there. Please defeat them!",
+			QuestId = "defeat_skeletons",
+			ShowAccept = false,
+			ShowTurnIn = false,
+		})
+	else
+		-- Offer quest
+		openDialogueEvent:FireClient(player, {
+			NPCName = "Cane",
+			Dialogue = "Those cursed skeletons have been threatening this area. Can you defeat three of them for me? I'll reward you with 50 XP and 3 health potions.",
+			QuestId = "defeat_skeletons",
+			ShowAccept = true,
+			ShowTurnIn = false,
+		})
+	end
+end)
+
+-- Handle quest acceptance
+acceptQuestEvent.OnServerEvent:Connect(function(player, questId: string)
+	local playerActor = gameService.Players[player]
+	if not playerActor then
+		return
+	end
+
+	local success = questManager:AcceptQuest(player, questId)
+	if success then
+		print(player.Name, "accepted quest:", questId)
+		showNotificationEvent:FireClient(player, "Quest accepted: Skeletal Threat")
+
+		-- Send updated quest state
+		local activeQuests = questManager:GetActiveQuests(player)
+		updateQuestsEvent:FireClient(player, activeQuests)
+	else
+		warn(player.Name, "failed to accept quest:", questId)
+	end
+end)
+
+-- Handle quest turn-in
+turnInQuestEvent.OnServerEvent:Connect(function(player, questId: string)
+	local playerActor = gameService.Players[player]
+	if not playerActor then
+		return
+	end
+
+	local success = questManager:TurnInQuest(player, questId, playerActor)
+	if success then
+		print(player.Name, "turned in quest:", questId)
+		showNotificationEvent:FireClient(player, "Quest complete! Received 50 XP and 3 health potions")
+
+		-- Update client inventory and stats
+		updateInventoryEvent:FireClient(player, playerActor.Inventory.Slots)
+
+		local requiredXP = StatCalculator.CalculateXPForNextLevel(playerActor.Stats.Level)
+		updateStatsEvent:FireClient(player, {
+			CurrentHealth = playerActor.Stats.RuntimeStats.CurrentHealth,
+			MaxHealth = playerActor.Stats.DerivedStats.MaxHealth,
+			CurrentMana = playerActor.Stats.RuntimeStats.CurrentMana,
+			MaxMana = playerActor.Stats.DerivedStats.MaxMana,
+			CurrentXP = playerActor.Stats.RuntimeStats.CurrentXP,
+			RequiredXP = requiredXP,
+			Level = playerActor.Stats.Level,
+		})
+
+		-- Send updated quest state
+		local activeQuests = questManager:GetActiveQuests(player)
+		updateQuestsEvent:FireClient(player, activeQuests)
+	else
+		warn(player.Name, "failed to turn in quest:", questId)
 	end
 end)
 

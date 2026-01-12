@@ -93,12 +93,29 @@ end
 
 -- Handle left click (movement, attack, interact)
 function PlayerController:OnLeftClick()
+	print("CLIENT CLICK: OnLeftClick called")
+
 	-- Get mouse hit position in world
 	local mouseHit = self.Mouse.Hit
 	local mouseTarget = self.Mouse.Target
 
 	if not mouseHit then
+		print("CLIENT CLICK: No mouse hit, returning")
 		return
+	end
+
+	-- Check if we clicked on an NPC
+	if mouseTarget then
+		local model = mouseTarget:FindFirstAncestorOfClass("Model")
+		if model and model.Name == "Cane" then
+			print("CLIENT CLICK: Clicked on Cane NPC")
+			-- Clicked on Cane NPC, fire NPC click event
+			local npcClickEvent = ReplicatedStorage:FindFirstChild("NPCClick")
+			if npcClickEvent and npcClickEvent:IsA("RemoteEvent") then
+				npcClickEvent:FireServer("Cane")
+			end
+			return
+		end
 	end
 
 	-- Check if we clicked on or near a monster
@@ -116,6 +133,8 @@ function PlayerController:OnLeftClick()
 			end
 		end
 	end
+
+	print(string.format("CLIENT CLICK: Firing to server (monster: %s, target: %s)", tostring(clickedMonster), mouseTarget and mouseTarget.Name or "nil"))
 
 	-- Fire event to server for processing
 	-- Server will determine if this is an attack or interaction

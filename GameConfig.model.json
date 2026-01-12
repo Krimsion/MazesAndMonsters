@@ -1,0 +1,119 @@
+{
+  "ClassName": "Configuration",
+  "Attributes": {
+    "PlayerAttackCooldown": 1.0,
+    "MonsterAttackCooldown": 1.5,
+    "MonsterAlertRange": 8,
+    "MonsterChaseRange": 12,
+    "MonsterAlertDuration": 0.5,
+    "MonsterChaseDuration": 10.0,
+    "MonsterAttackRange": 1,
+    "MonsterAttackRangeBuffer": 1,
+    "MonsterRespawnTime": 20.0,
+    "PlayerStartingHealth": 100,
+    "PlayerStartingMana": 50,
+    "PlayerMovementSpeed": 0.65,
+    "GridTileSize": 4,
+    "LootPickupRange": 2
+  },
+  "Children": [
+    {
+      "ClassName": "StringValue",
+      "Name": "PlayerAttackCooldown_Description",
+      "Properties": {
+        "Value": "Player attack cooldown in seconds"
+      }
+    },
+    {
+      "ClassName": "StringValue",
+      "Name": "MonsterAttackCooldown_Description",
+      "Properties": {
+        "Value": "Monster attack cooldown in seconds"
+      }
+    },
+    {
+      "ClassName": "StringValue",
+      "Name": "MonsterAlertRange_Description",
+      "Properties": {
+        "Value": "How far monsters can detect players (tiles)"
+      }
+    },
+    {
+      "ClassName": "StringValue",
+      "Name": "MonsterChaseRange_Description",
+      "Properties": {
+        "Value": "Max distance monsters will chase players (tiles)"
+      }
+    },
+    {
+      "ClassName": "StringValue",
+      "Name": "MonsterAlertDuration_Description",
+      "Properties": {
+        "Value": "Time in Alert state before chasing (seconds)"
+      }
+    },
+    {
+      "ClassName": "StringValue",
+      "Name": "MonsterChaseDuration_Description",
+      "Properties": {
+        "Value": "Max time to chase before giving up (seconds)"
+      }
+    },
+    {
+      "ClassName": "StringValue",
+      "Name": "MonsterAttackRange_Description",
+      "Properties": {
+        "Value": "Monster melee attack range (tiles)"
+      }
+    },
+    {
+      "ClassName": "StringValue",
+      "Name": "MonsterAttackRangeBuffer_Description",
+      "Properties": {
+        "Value": "Buffer to prevent jitter (tiles)"
+      }
+    },
+    {
+      "ClassName": "StringValue",
+      "Name": "MonsterRespawnTime_Description",
+      "Properties": {
+        "Value": "Time before monsters respawn (seconds)"
+      }
+    },
+    {
+      "ClassName": "StringValue",
+      "Name": "PlayerStartingHealth_Description",
+      "Properties": {
+        "Value": "Player starting health"
+      }
+    },
+    {
+      "ClassName": "StringValue",
+      "Name": "PlayerStartingMana_Description",
+      "Properties": {
+        "Value": "Player starting mana"
+      }
+    },
+    {
+      "ClassName": "StringValue",
+      "Name": "PlayerMovementSpeed_Description",
+      "Properties": {
+        "Value": "Time per tile movement (seconds)"
+      }
+    },
+    {
+      "ClassName": "StringValue",
+      "Name": "GridTileSize_Description",
+      "Properties": {
+        "Value": "Size of each grid tile (studs)"
+      }
+    },
+    {
+      "ClassName": "StringValue",
+      "Name": "LootPickupRange_Description",
+      "Properties": {
+        "Value": "Range to pick up loot (tiles)"
+      }
+    }
+  ]
+}

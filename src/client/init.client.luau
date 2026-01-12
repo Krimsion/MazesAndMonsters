@@ -12,6 +12,8 @@ local CharacterSheet = require(script.UI.CharacterSheet)
 local AbilityBook = require(script.UI.AbilityBook)
 local Notifications = require(script.UI.Notifications)
 local CharacterSelection = require(script.UI.CharacterSelection)
+local DialogueUI = require(script.UI.DialogueUI)
+local QuestTrackerUI = require(script.UI.QuestTrackerUI)
 local Inventory = require(ReplicatedStorage.Shared.Data.Inventory)
 
 local player = Players.LocalPlayer
@@ -31,6 +33,7 @@ end
 
 -- Store connections to clean up on character respawn
 local currentConnections: { RBXScriptConnection } = {}
+local controller: any = nil -- Store controller to prevent duplicates
 
 -- Wait for character to spawn
 player.CharacterAdded:Connect(function(character)
@@ -53,9 +56,13 @@ player.CharacterAdded:Connect(function(character)
 	-- Wait a frame to ensure character is fully loaded
 	task.wait()
 
-	-- Initialize player controller
-	local controller = PlayerController.new(player)
-	print("DEBUG: PlayerController created")
+	-- Initialize player controller only once
+	if not controller then
+		controller = PlayerController.new(player)
+		print("DEBUG: PlayerController created")
+	else
+		print("DEBUG: PlayerController already exists, skipping creation")
+	end
 
 	-- Set initial camera position
 	controller:UpdateCamera(humanoidRootPart.Position)
@@ -78,6 +85,10 @@ player.CharacterAdded:Connect(function(character)
 
 	-- Initialize Notifications
 	Notifications.Initialize(player)
+
+	-- Initialize Quest UIs
+	local dialogueUI = DialogueUI.new(player)
+	local questTracker = QuestTrackerUI.new(player)
 
 	-- Don't add test items to hotbar - let server sync properly
 	-- hotbar:SetBeltSlot(1, { Name = "Health Potion", Count = 3 })
